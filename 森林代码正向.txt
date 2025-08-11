@@ -1,0 +1,58 @@
+getwd()
+install.packages("forestploter")
+library(grid)
+library(forestploter)
+library(openxlsx)
+
+# 使用正斜杠（推荐跨平台兼容）
+setwd("D:/腺样体肥大/MR/森林图代码")
+
+
+dt <- read.xlsx("D:/腺样体肥大/MR/森林图代码/阳性免疫细胞27原.xlsx")
+dt <- 阳性免疫细胞27原
+dt<-dt[,1:10]#(3,5)
+dt$` ` <- paste(rep(" ", 20), collapse = " ")
+dt$'OR(95%CI)'<-ifelse(is.na(dt$OR),"",
+                       sprintf('%.2f(%.2f to %.2f)',
+                               dt$OR,dt$OR_lci95,dt$OR_uci95))
+dt[is.na(dt)] <- " "
+
+dt$P = ifelse(dt$P<0.001, "<0.001", sprintf("%.3f", dt$P))
+dt$beta = sprintf("%.2f", dt$beta)
+tm <- forest_theme(base_size = 10, # 基础大小
+                   # 可信区间点的形状，线型、颜色、宽度
+                   ci_pch = 20,
+                   ci_col = "#4575b4", # #762a83
+                   ci_lty = 1,
+                   ci_lwd = 2.3,
+                   ci_Theight = 0.2, # 可信区间两端加短竖线
+                   
+                   # 参考线宽度、形状、颜色
+                   refline_lwd = 1.5,
+                   refline_lty = "dashed",
+                   refline_col = "red",
+                   
+                   # 汇总菱形的填充色和边框色
+                   summary_fill = "#4575b4",
+                   summary_col = "#4575b4",
+                   
+                   # 脚注大小、字体、颜色
+                   footnote_cex = 1.1,
+                   footnote_fontface = "italic",
+                   footnote_col = "blue")
+p <- forest(dt[,c(1,2,3,4,5,8,9,10)],#选择数据4-7列和9列作为森林图元素
+            est = dt$OR,#HR
+            lower = dt$OR_lci95,#可信区间下限
+            upper = dt$OR_uci95,#可信区间上限
+            sizes = 0.6,#点估计框大小，用标准误映射
+            ci_column = 7,#可信区间在第几列展示
+            ref_line = 1,
+            xlim = c(0.9,1.1),
+            ticks_at = c(0.9,1,1.1),
+            footnote="p<0.05 was considered statistically significant",
+            arrow_lab = c('protective factor','risk factor'),
+            theme = tm)#主题
+print(p)
+png(filename = 'MR结果.tif',width = 10000,height = 15000,res = 350)  #tif格式  设置分辨率
+print(p)
+dev.off()

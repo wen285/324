@@ -1,0 +1,155 @@
+# 安装必要的R包
+if (!require("TwoSampleMR")) install.packages("TwoSampleMR")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("ggplot2")) install.packages("ggplot2")
+
+library(TwoSampleMR)
+library(dplyr)
+library(ggplot2)
+
+# 设置FinnGen结局数据库ID
+outcome_id <- "finn-b-I8_TONSIL"  # 替换慢性扁桃体及腺样体疾病ID
+
+# ======================
+# 正向孟德尔随机化 (免疫细胞表型 → 慢性扁桃体疾病)
+# ======================
+
+# 1. 准备暴露数据 (731个免疫细胞表型)
+exposure_ids <- paste0("GCST", 90001391:90002121)  # 731个ID
+forward_results <- list()
+
+for (id in exposure_ids) {
+  tryCatch({
+    # 获取暴露工具变量
+    exposure_dat <- extract_instruments(
+      id,
+      p1 = 1e-5,         # P < 1×10⁻⁵
+      clump = TRUE,
+      r2 = 0.001,        # LD r² < 0.001
+      kb = 10000         # 窗口大小10,000 kb
+    )
+    
+    # 过滤弱工具变量 (F-statistic < 10)
+    exposure_dat$F_stat <- (exposure_dat$beta.exposure / exposure_dat$se.exposure)^2
+    exposure_dat <- exposure_dat[exposure_dat$F_stat >= 10, ]
+    
+    # 获取结局数据
+    outcome_dat <- extract_outcome_data(
+      snps = exposure_dat$SNP,
+      outcomes = outcome_id
+    )
+    
+    # 协调数据 (action = 2)
+    dat <- harmonise_data(
+      exposure_dat = exposure_dat,
+      outcome_dat = outcome_dat,
+      action = 2       # 移除回文序列和重复SNP
+    )
+    
+    # 执行IVW分析 (随机效应模型)
+    res_ivw <- mr(dat, method_list = "mr_ivw") %>%
+      mutate(method = "IVW (RE)")
+    
+    # 敏感性分析
+    heterogeneity <- mr_heterogeneity(dat) %>% 
+      filter(method == "IVW")
+    
+    pleiotropy <- mr_pleiotropy_test(dat)
+    presso <- run_mr_presso(dat)
+    
+    # 留一法分析
+    single_res <- mr_leaveoneout(dat)
+    
+    # 保存结果
+    forward_results[[id]] <- list(
+      harmonised_data = dat,
+      ivw_result = res_ivw,
+      heterogeneity = heterogeneity,
+      pleiotropy = pleiotropy,
+      presso = presso,
+      leaveoneout = single_res
+    )
+    
+  }, error = function(e) {
+    message(paste("Error processing", id, ":", e$message))
+  })
+}
+
+# ======================
+# 反向孟德尔随机化 (慢性扁桃体疾病 → 免疫细胞表型)
+# ======================
+
+# 准备暴露数据 (慢性扁桃体疾病)
+reverse_exposure <- extract_instruments(
+  outcome_id,
+  p1 = 1e-5,
+  clump = TRUE,
+  r2 = 0.001,
+  kb = 10000
+) %>% 
+  mutate(F_stat = (beta.exposure / se.exposure)^2) %>% 
+  filter(F_stat >= 10)
+
+reverse_results <- list()
+
+for (id in exposure_ids) {
+  tryCatch({
+    # 获取结局数据 (免疫细胞表型)
+    outcome_dat <- extract_outcome_data(
+      snps = reverse_exposure$SNP,
+      outcomes = id
+    )
+    
+    # 协调数据
+    rev_dat <- harmonise_data(
+      exposure_dat = reverse_exposure,
+      outcome_dat = outcome_dat,
+      action = 2
+    )
+    
+    # 执行IVW分析
+    rev_ivw <- mr(rev_dat, method_list = "mr_ivw") %>%
+      mutate(method = "IVW (RE)")
+    
+    # 保存精简结果
+    reverse_results[[id]] <- rev_ivw
+    
+  }, error = function(e) {
+    message(paste("Error processing reverse", id, ":", e$message))
+  })
+}
+
+# ======================
+# 结果整理与可视化
+# ======================
+
+# 1. 合并正向结果
+forward_summary <- map_dfr(forward_results, ~ .x$ivw_result, .id = "exposure")
+
+# 2. 合并反向结果
+reverse_summary <- bind_rows(reverse_results, .id = "outcome")
+
+# 3. 筛选显著结果 (P < 0.05)
+significant_forward <- forward_summary %>% 
+  filter(pval < 0.05) %>% 
+  mutate(OR = exp(b))
+
+# 4. 绘制森林图
+forest_plot <- ggplot(significant_forward, aes(x = OR, y = exposure)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = exp(b - 1.96*se), xmax = exp(b + 1.96*se))) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  labs(title = "Significant MR Associations",
+       x = "Odds Ratio (95% CI)", 
+       y = "Immune Cell Trait") +
+  theme_minimal()
+
+# 5. 保存结果
+write.csv(forward_summary, "forward_mr_results.csv")
+write.csv(reverse_summary, "reverse_mr_results.csv")
+ggsave("mr_forest_plot.png", forest_plot, width = 10, height = 8)
+
+# 6. 结果报告
+cat(sprintf("正向分析发现 %d 个显著关联\n", nrow(significant_forward)))
+cat("已保存完整结果至CSV文件\n")
+print(forest_plot)
